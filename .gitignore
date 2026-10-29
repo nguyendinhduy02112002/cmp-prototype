@@ -1,0 +1,16 @@
+node_modules/
+dist/
+
+# Local environment files (keep the documented example)
+.env
+.env.local
+.env.*.local
+!.env.example
+
+# Logs and editor/OS metadata
+*.log
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
