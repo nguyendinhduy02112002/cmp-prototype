@@ -19,13 +19,49 @@ export interface TenantMembership {
 }
 export interface TenantApplication {
   id: string
+  tenantId: string
   name: string
+  code: string
+  type: "WEB" | "SYSTEM" | "MOBILE"
+  description?: string
+  propertyId?: string
+  status: "ACTIVE" | "INACTIVE"
+  createdAt: string
+  updatedAt: string
+  createdBy: string
+  updatedBy?: string
+  activatedAt?: string
+  /** Compatibility display value used by existing prototype screens. */
   property: string
 }
 export interface TenantProperty {
   id: string
+  tenantId: string
   name: string
+  code: string
+  type: "WEB" | "ANDROID" | "IOS"
   applicationId: string
+  origin?: string
+  packageName?: string
+  bundleId?: string
+  description?: string
+  status: "ACTIVE" | "INACTIVE"
+  createdAt: string
+  updatedAt: string
+  createdBy: string
+  updatedBy?: string
+  activatedAt?: string
+  integration?: PropertyIntegration
+}
+
+export interface PropertyIntegration {
+  consentCode: string
+  bannerCode: string
+  status: "DRAFT" | "PUBLISHED"
+  version: number
+  deploymentId?: string
+  publishedAt?: string
+  publishedBy?: string
 }
 
 /** Vòng đời đối tượng cấu hình (SRS 4.3.2) */

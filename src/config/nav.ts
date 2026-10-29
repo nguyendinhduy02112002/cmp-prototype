@@ -1,4 +1,4 @@
-import { LayoutDashboard, Bell, Target, FileCheck2, FileText, PanelBottom, GitBranch, Database, ShieldCheck, ClipboardPen, Upload, PlayCircle, UserCheck, Users, ScrollText, Plug, Settings, type LucideIcon } from "lucide-react"
+import { LayoutDashboard, Bell, Target, FileCheck2, FileText, PanelBottom, GitBranch, Database, ShieldCheck, ClipboardPen, Upload, PlayCircle, UserCheck, Users, ScrollText, Plug, Settings, AppWindow, type LucideIcon } from "lucide-react"
 import type { Mod } from "@/lib/perm"
 
 export interface NavItem { title: string; desc: string; url: string; icon: LucideIcon; mod: Mod; count?: "approvals" | "alerts" | "imports"; tag?: string }
@@ -26,7 +26,8 @@ export const NAV: { label: string; items: NavItem[] }[] = [
   { label: "Hệ thống", items: [
     { title: "Người dùng & phân quyền", desc: "Vai trò và quyền theo nhóm chức năng", url: "/users", icon: Users, mod: "users" },
     { title: "Nhật ký kiểm toán", desc: "Ai đã thực hiện thay đổi nào", url: "/audit", icon: ScrollText, mod: "audit" },
-    { title: "Ứng dụng & tích hợp", desc: "Ứng dụng, event, connector và cookie scan", url: "/integrations", icon: Plug, mod: "integ", tag: "Mô phỏng" },
+    { title: "Ứng dụng", desc: "Đăng ký và quản lý Application của tenant", url: "/applications", icon: AppWindow, mod: "integ" },
+    { title: "Tích hợp & sự kiện", desc: "Event, connector và cookie scan", url: "/integrations", icon: Plug, mod: "integ", tag: "Mô phỏng" },
     { title: "Cài đặt tenant", desc: "Hồ sơ tổ chức, tùy chọn chung và liên hệ quyền riêng tư", url: "/settings", icon: Settings, mod: "settings" },
   ] },
 ]

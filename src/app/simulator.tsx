@@ -3,7 +3,7 @@
  * Cột trái: thiết bị của chủ thể. Cột phải: bên trong CMP (evidence, Receipt, event, Decision API).
  */
 import * as React from "react"
-import { Link } from "react-router-dom"
+import { Link, useSearchParams } from "react-router-dom"
 import { Monitor, Smartphone, RotateCcw, LogIn, Cookie, ServerCrash, CircleCheck, CircleX, CircleSlash } from "lucide-react"
 import { PageHeader, Section, NativeSelect, Note, Mono, StatusBadge, Pill, JsonBlock, FormField } from "@/components/cmp/kit"
 import { Button } from "@/components/ui/button"
@@ -33,12 +33,13 @@ const newCk = () => "ck_" + fakeHash(String(Date.now())).slice(0, 4) + "…" + f
 
 export default function SimulatorPage() {
   const events = useStore((s) => s.events)
+  const [sp] = useSearchParams()
   const [subject, setSubject] = React.useState(SUBJECTS[5])
   const [ck, setCk] = React.useState(newCk)
   const [device, setDevice] = React.useState<"d" | "m">("d")
   const [lang, setLang] = React.useState<"vi" | "en">("vi")
   const [down, setDown] = React.useState(false)
-  const [tab, setTab] = React.useState("form")
+  const [tab, setTab] = React.useState(sp.get("tab") === "pref" ? "pref" : "form")
   const [log, setLog] = React.useState<LogLine[]>([])
   const push = React.useCallback((l: Omit<LogLine, "at">) => setLog((x) => [{ ...l, at: new Date().toISOString() }, ...x].slice(0, 60)), [])
   const subjects = [...SUBJECTS.slice(0, 40), "KH0099001"]
@@ -54,6 +55,7 @@ export default function SimulatorPage() {
         <SimulationNotice>Receipt, JWS/JWE, webhook và kết quả tích hợp chỉ là dữ liệu minh họa. Mọi quyết định nghiệp vụ vẫn dùng action và state hiện có của prototype.</SimulationNotice>
         <RelationshipNote><b>Phân vai:</b> phần thiết bị là hành động của <b>Khách hàng</b>; các nút chức năng đại diện <b>Ứng dụng tích hợp</b>; công tắc sự cố và nhật ký phiên thuộc <b>Hệ thống mô phỏng</b>, không phải thao tác của khách hàng.</RelationshipNote>
       </Section>
+      {sp.get("propertyId") && <PublishedDeploymentScenario propertyId={sp.get("propertyId") || ""} subject={subject} device={device} lang={lang} down={down} push={push} onWithdraw={() => setTab("pref")} />}
       <Section><GuidedDemoPanel onTabChange={(v) => setTab(v)} /></Section>
       <Section className="flex flex-wrap items-end gap-3">
         <FormField label="Chủ thể đã đăng nhập (mã giả danh)"><NativeSelect label="Chủ thể" value={subject} onChange={(v) => { setSubject(v); push({ kind: "info", text: `Đổi chủ thể sang ${v}` }) }} options={subjects.map((s) => [s, s === "KH0099001" ? "KH0099001 (khách mới)" : s] as [string, string])} /></FormField>
@@ -115,6 +117,27 @@ export default function SimulatorPage() {
   )
 }
 
+function PublishedDeploymentScenario({ propertyId, subject, device, lang, down, push, onWithdraw }: { propertyId: string; subject: string; device: "d" | "m"; lang: "vi" | "en"; down: boolean; push: (l: Omit<LogLine, "at">) => void; onWithdraw: () => void }) {
+  const property = useStore((s) => s.properties.find((p) => p.id === propertyId))
+  const application = useStore((s) => s.applications.find((a) => a.id === property?.applicationId))
+  const banners = useStore((s) => s.banners); const record = useStore((s) => s.recordDecision); const rc = useRenderConsents()
+  const [last, setLast] = React.useState<ConsentEvent | null>(null)
+  if (!property || !application || property.integration?.status !== "PUBLISHED") return <Section><Note tone="err">Deployment không tồn tại, không thuộc tenant hoặc chưa Published.</Note></Section>
+  const banner = banners.find((b) => b.code === property.integration?.bannerCode)
+  const live = banner?.versions.find((v) => v.status === "Hoạt động")
+  const consent = rc([property.integration.consentCode])[0]
+  if (!live || !consent) return <Section><Note tone="err">Banner hoặc Consent đã gán không còn ở trạng thái Hoạt động.</Note></Section>
+  const decide = (decision: Decision) => {
+    if (down) return push({ kind: "warn", text: "CMP không phản hồi; deployment mock không ghi quyết định." })
+    const event = record({ subject, consent: property.integration!.consentCode, decision, channel: `Deployment ${property.integration!.deploymentId}`, app: application.id, propertyId: property.id })
+    setLast(event); push({ kind: "ev", text: `${property.name}: ${decision}`, ev: event })
+  }
+  return <Section className="flex flex-col gap-3"><div className="flex flex-wrap items-center justify-between gap-2"><div><h2 className="text-lg font-semibold">Published Deployment Demo</h2><p className="text-sm text-muted-foreground">{application.name} → {property.name} · <Mono>{property.integration.deploymentId}</Mono> · v{property.integration.version}</p></div><Button variant="outline" render={<Link to={`/applications/${application.id}/properties/${property.id}/integration`} />} nativeButton={false}>Integration Code</Button></div>
+    <DeviceFrame device={device} url={property.origin || property.packageName || property.bundleId || property.name} page={<FakeShop device={device} />}><ConsentPopup cfg={{ ...live.cfg, layout: live.cfg.layout === "inline" ? "center" : live.cfg.layout }} lang={lang} consent={consent} onAccept={() => decide("ACCEPTED")} onReject={() => decide("REJECTED")} onClose={() => push({ kind: "info", text: "Đóng popup: không tạo decision event." })} /></DeviceFrame>
+    {last && <Card><CardContent className="flex flex-wrap items-center gap-2 pt-6"><StatusBadge s={last.decision} /><Mono>{last.id}</Mono><span className="text-sm">Đã tạo Consent Record và Evidence cho {last.subject}.</span><Button size="sm" variant="outline" render={<Link to={`/records/${last.subject}`} />} nativeButton={false}>Xem Consent Record</Button><Button size="sm" variant="outline" render={<Link to={`/evidence?id=${last.id}`} />} nativeButton={false}>Xem Evidence</Button>{last.decision === "ACCEPTED" && <Button size="sm" onClick={onWithdraw}>Tiếp tục đến Withdraw</Button>}</CardContent></Card>}
+  </Section>
+}
+
 type Ctx = { subject: string; device: "d" | "m"; lang: "vi" | "en"; down: boolean; push: (l: Omit<LogLine, "at">) => void }
 
 function CookieScenario({ ck, subject, device, lang, down, push }: Ctx & { ck: string }) {
@@ -130,6 +153,7 @@ function CookieScenario({ ck, subject, device, lang, down, push }: Ctx & { ck: s
   const [reopen, setReopen] = React.useState(false)
   const show = !decided || reopen
   const ok = (code: string) => mine.find((m) => m.consent === code)?.decision === "ACCEPTED"
+  const currentChoices = Object.fromEntries(groups.map((g) => [g.code, ok(g.code)]))
   const decide = (d: Record<string, boolean>) => {
     if (down) { push({ kind: "warn", text: "Không ghi nhận được quyết định: CMP không phản hồi. SDK giữ chặn tag phi thiết yếu (fail-closed, BRL-06)." }); return }
     Object.entries(d).forEach(([code, v]) => { const e = record({ subject: ck, consent: code, decision: v ? "ACCEPTED" : "REJECTED", channel: "Web", app: "app_7Q2K9M" }); push({ kind: "ev", text: `Banner cookie: ${v ? "Chấp nhận" : "Từ chối"} nhóm ${code}`, ev: e }) })
@@ -142,7 +166,7 @@ function CookieScenario({ ck, subject, device, lang, down, push }: Ctx & { ck: s
   return (
     <div className="flex flex-col gap-3">
       <DeviceFrame device={device} url="abcmart.vn" page={<FakeShop device={device} />}>
-        {show && <CookieBanner key={ck + String(reopen)} cfg={live.cfg} lang={lang} groups={groups} onDecide={decide} />}
+        {show && <CookieBanner key={ck + String(reopen)} cfg={live.cfg} lang={lang} groups={groups} initialChoices={decided ? currentChoices : undefined} onDecide={decide} />}
         {!show && <button onClick={() => setReopen(true)} className="absolute bottom-3 left-3 flex items-center gap-1.5 rounded-full bg-white px-3 py-1.5 text-xs font-medium shadow-md"><Cookie className="size-3.5" /> Tùy chọn cookie</button>}
       </DeviceFrame>
       <div className="grid gap-3 md:grid-cols-2">
@@ -206,23 +230,78 @@ function FormScenario({ subject, device, lang, down, push }: Ctx) {
     else if (required(f.fn, f.consent)) setResult({ tone: "err", text: `Bạn đã từ chối xử lý dữ liệu cho mục đích ${f.consent}, nên chúng tôi chưa thể thực hiện ${f.name}. Các chức năng khác vẫn dùng bình thường. (MSG-13-02) Bạn có thể đổi lựa chọn ở Preference Center.` })
     else setResult({ tone: "info", text: `Đã ghi nhận lựa chọn Từ chối lúc ${fmtDT(e.ts, true)}. Bạn vẫn tiếp tục ${f.name} bình thường. (MSG-13-01)` })
   }
+  const [showTechnical, setShowTechnical] = React.useState(false)
+  const [showPreferences, setShowPreferences] = React.useState(false)
+  const optionalFns = FNS.filter((f) => f.fn === "FN-03" || f.fn === "FN-04")
+  const [optionalChoices, setOptionalChoices] = React.useState<Record<string, boolean>>({})
+  const chooseOptional = (value: boolean) => {
+    if (down) {
+      push({ kind: "warn", text: "CMP không phản hồi: không ghi nhận được lựa chọn." })
+      return
+    }
+    optionalFns.forEach((f) => {
+      const e = record({ subject, consent: f.consent, decision: value ? "ACCEPTED" : "REJECTED", channel: "Form nghiệp vụ", app: "app_3HX81P" })
+      push({ kind: "ev", text: `${value ? "Đồng ý" : "Từ chối"} ${f.name}`, ev: e })
+    })
+    setOptionalChoices(Object.fromEntries(optionalFns.map((f) => [f.consent, value])))
+    setShowPreferences(false)
+    setResult({ tone: "ok", text: value ? "Đã lưu lựa chọn đồng ý cho các mục đích tùy chọn." : "Đã lưu lựa chọn từ chối các mục đích tùy chọn. Bạn vẫn có thể sử dụng các chức năng khác." })
+  }
+  const saveOptionalChoices = () => {
+    if (down) {
+      push({ kind: "warn", text: "CMP không phản hồi: không ghi nhận được lựa chọn." })
+      return
+    }
+    optionalFns.forEach((f) => {
+      const accepted = !!optionalChoices[f.consent]
+      const e = record({ subject, consent: f.consent, decision: accepted ? "ACCEPTED" : "REJECTED", channel: "Form nghiệp vụ", app: "app_3HX81P" })
+      push({ kind: "ev", text: `${accepted ? "Đồng ý" : "Từ chối"} ${f.name}`, ev: e })
+    })
+    setShowPreferences(false)
+    setResult({ tone: "ok", text: "Đã lưu lựa chọn riêng cho từng mục đích." })
+  }
   const bannerCfg = (code: string) => banners.find((b) => b.code === code)?.versions.find((v) => v.status === "Hoạt động")?.cfg || banners[0].versions[0].cfg
   const reset = (code: string) => { const e = record({ subject, consent: code, decision: "RE_CONSENT", channel: "Hệ thống", app: "app_3HX81P" }); push({ kind: "ev", text: `Mô phỏng: xuất bản phiên bản trọng yếu → ${code} chuyển RE_CONSENT, phát VERSION_CHANGED`, ev: e }) }
   return (
     <div className="flex flex-col gap-3">
       <DeviceFrame device={device} url="member.abcmart.vn/tai-khoan" page={
-        <div className="h-full overflow-y-auto p-5">
+        <div className="h-full overflow-y-auto bg-[#F7F9FC] p-4 text-[#16202E] sm:p-6">
           <div className="text-xs font-bold text-[#C8102E]">ABC Mart · Thành viên</div>
-          <div className="mt-1 text-lg font-bold">Xin chào, khách hàng <span className="font-mono text-sm">{subject}</span></div>
-          <div className="mt-1 text-xs text-black/55">Mỗi nút dưới đây là một chức năng gọi CMP.require(consent_code) trước khi thực hiện (UC-12).</div>
-          <div className={cn("mt-4 grid gap-2.5", device === "d" && "grid-cols-2")}>
-            {FNS.map((f) => { const s = state(f.consent); return (
-              <button key={f.fn} data-testid={"fn-" + f.fn} onClick={() => require(f)} className="rounded-lg border border-black/15 p-3 text-left hover:bg-black/[0.03]">
-                <div className="flex items-center justify-between"><span className="text-sm font-semibold">{f.name}</span><span className="font-mono text-[10px] text-black/45">{f.fn}</span></div>
-                <div className="mt-1 font-mono text-[11px] text-black/55">{f.consent} · {s ? s.decision : "chưa có"}</div>
-              </button>) })}
+          <h2 className="mt-1 text-xl font-bold">Chào mừng bạn quay lại</h2>
+          <p className="mt-1 text-xs text-black/60">Quản lý tài khoản và trải nghiệm của bạn.</p>
+
+          <div className="mt-4 rounded-xl border border-[#DCE5F4] bg-white p-4 shadow-sm">
+            <div className="flex items-start justify-between gap-2">
+              <div>
+                <h3 className="text-base font-bold">Quyền riêng tư của bạn</h3>
+                <p className="mt-1 text-xs leading-relaxed text-black/65">Bạn có thể lựa chọn nhận ưu đãi và cá nhân hóa trải nghiệm. Từ chối các mục đích tùy chọn không ảnh hưởng đến việc sử dụng dịch vụ khác.</p>
+              </div>
+              <span className="shrink-0 rounded-full bg-[#EAF2FF] px-2 py-1 text-[10px] font-medium text-[#2457C5]">Tùy bạn quyết định</span>
+            </div>
+            <div className="mt-3 grid gap-2 sm:grid-cols-2">
+              <button type="button" data-testid="quick-reject" onClick={() => chooseOptional(false)} className="min-h-10 rounded-lg border border-[#2457C5] bg-white px-3 py-2 text-sm font-semibold text-[#2457C5] hover:bg-[#F0F5FF]">Từ chối tùy chọn</button>
+              <button type="button" data-testid="quick-accept" onClick={() => chooseOptional(true)} className="min-h-10 rounded-lg bg-[#2457C5] px-3 py-2 text-sm font-semibold text-white hover:bg-[#1946A7]">Đồng ý tất cả tùy chọn</button>
+            </div>
+            <button type="button" data-testid="quick-custom" onClick={() => setShowPreferences((v) => !v)} className="mt-3 text-xs font-semibold text-[#2457C5] underline underline-offset-2">{showPreferences ? "Ẩn tùy chỉnh" : "Tùy chỉnh lựa chọn"}</button>
+            {showPreferences && <div className="mt-3 space-y-2 border-t border-black/10 pt-3">
+              {optionalFns.map((f) => <label key={f.consent} className="flex items-center justify-between gap-3 rounded-lg bg-[#F7F9FC] p-3 text-xs">
+                <span className="font-medium">{f.name}</span>
+                <input type="checkbox" className="size-4 accent-[#2457C5]" checked={optionalChoices[f.consent] ?? state(f.consent)?.decision === "ACCEPTED"} onChange={(e) => setOptionalChoices((prev) => ({ ...prev, [f.consent]: e.target.checked }))} />
+              </label>)}
+              <button type="button" data-testid="quick-save" onClick={saveOptionalChoices} className="w-full rounded-lg bg-[#2457C5] px-3 py-2 text-sm font-semibold text-white">Lưu lựa chọn</button>
+            </div>}
           </div>
-          {result && <div data-testid="fn-result" className={cn("mt-4 rounded-lg p-3 text-sm", result.tone === "ok" ? "bg-[#E3F4EA] text-[#17663F]" : result.tone === "err" ? "bg-[#FCE7E5] text-[#A1201A]" : "bg-[#E6EEFB] text-[#1D4BAE]")}>{result.text}</div>}
+
+          <div className="mt-4 rounded-xl border border-black/10 bg-white p-4">
+            <h3 className="text-sm font-bold">Dịch vụ của bạn</h3>
+            <p className="mt-1 text-xs text-black/60">Một số dịch vụ có thể cần thông báo và xác nhận riêng khi bạn sử dụng.</p>
+            <div className="mt-3 grid gap-2 sm:grid-cols-2">
+              {FNS.filter((f) => f.fn === "FN-01" || f.fn === "FN-02").map((f) => <button key={f.fn} data-testid={"fn-" + f.fn} onClick={() => require(f)} className="rounded-lg border border-black/15 p-3 text-left text-sm font-semibold hover:border-[#2457C5] hover:bg-[#F7F9FF]">{f.name}<span className="mt-1 block text-[11px] font-normal text-black/50">Tiếp tục →</span></button>)}
+            </div>
+          </div>
+          <button type="button" onClick={() => setShowTechnical((v) => !v)} className="mt-3 text-[11px] text-black/50 underline">{showTechnical ? "Ẩn công cụ mô phỏng" : "Hiển thị công cụ mô phỏng nâng cao"}</button>
+          {showTechnical && <div className="mt-2 grid gap-2 sm:grid-cols-2">{FNS.map((f) => <button key={f.fn} data-testid={"fn-advanced-" + f.fn} onClick={() => require(f)} className="rounded-md border border-black/15 bg-white p-2 text-left text-xs">{f.name}<span className="block font-mono text-[10px] text-black/50">{f.consent} · {state(f.consent)?.decision || "chưa có"}</span></button>)}</div>}
+          {result && <div data-testid="fn-result" role="status" className={cn("mt-4 rounded-lg p-3 text-sm", result.tone === "ok" ? "bg-[#E3F4EA] text-[#17663F]" : result.tone === "err" ? "bg-[#FCE7E5] text-[#A1201A]" : "bg-[#E6EEFB] text-[#1D4BAE]")}>{result.text}</div>}
         </div>}>
         {pending && <ConsentPopup key={pending.consent + mode} cfg={{ ...bannerCfg(pending.banner), layout: bannerCfg(pending.banner).layout === "inline" ? "center" : bannerCfg(pending.banner).layout }} lang={lang} consent={rc([pending.consent])[0]} mode={mode} diff={mode === "reconsent" ? diff() : undefined}
           onAccept={() => decide("ACCEPTED")} onReject={() => decide("REJECTED")} onClose={() => { push({ kind: "info", text: `Chủ thể đóng popup ${pending.consent}: DISMISSED – không phải quyết định, không ghi evidence, không tính Từ chối (BR-UC12-09)` }); setPending(null) }} />}

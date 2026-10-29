@@ -12,7 +12,7 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/com
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import { useCan, useStore } from "@/lib/store"
-import { FONTS, LAYOUTS, LAYOUT_BY_KIND } from "@/lib/mock"
+import { COOKIES, FONTS, LAYOUTS, LAYOUT_BY_KIND } from "@/lib/mock"
 import type { Banner, BannerCfg } from "@/lib/types"
 import { contrast, fmtDT } from "@/lib/fmt"
 import { msg, useUi } from "@/components/cmp/approval"
@@ -28,7 +28,14 @@ export function useRenderConsents() {
   const notices = useStore((s) => s.notices)
   return React.useCallback((codes: string[]): RenderConsent[] => codes.map((code) => {
     const c = consents.find((x) => x.code === code)
-    return { code, name: c?.name || code, kind: c?.kind || "Tùy chọn", sensitive: !!c?.purposes.some((p) => isSensitive(purposes.find((x) => x.code === p)?.items || [])), notice: notices.find((n) => n.consent === code && n.status === "Published") }
+    return {
+      code,
+      name: c?.name || code,
+      kind: c?.kind || "Tùy chọn",
+      sensitive: !!c?.purposes.some((p) => isSensitive(purposes.find((x) => x.code === p)?.items || [])),
+      notice: notices.find((n) => n.consent === code && n.status === "Published"),
+      cookies: COOKIES.filter((cookie) => cookie.grp === code).map((cookie) => ({ name: cookie.name, provider: cookie.prov, duration: cookie.ttl })),
+    }
   }), [consents, purposes, notices])
 }
 

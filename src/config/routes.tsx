@@ -17,9 +17,14 @@ import { RightsPage, IntegrationsPage } from "@/app/p3"
 import TenantSettingsPage from "@/app/tenant-settings"
 import { PlatformLayout } from "@/components/platform-layout"
 import { PlatformAuditPage, PlatformDashboardPage, TenantDirectoryPage } from "@/app/platform"
+import ApplicationsPage, { ApplicationDetailPage } from "@/app/applications"
+import { IntegrationCodePage, PropertyDetailPage } from "@/app/properties"
+import LoginPage from "@/app/auth"
+import TenantUserCreatePage from "@/app/user-create"
 
 /** Định tuyến CMP (hash router để chia sẻ prototype dạng một trang) – sitemap Bước 4 */
 export const routes: RouteObject[] = [
+  { path: "/login", element: <LoginPage /> },
   {
     path: "/platform",
     element: <PlatformLayout />,
@@ -54,7 +59,12 @@ export const routes: RouteObject[] = [
       { path: "/rights", element: <RightsPage /> },
       // Hệ thống
       { path: "/users", element: <UsersPage /> },
+      { path: "/users/create", element: <TenantUserCreatePage /> },
       { path: "/audit", element: <AuditPage /> },
+      { path: "/applications", element: <ApplicationsPage /> },
+      { path: "/applications/:applicationId", element: <ApplicationDetailPage /> },
+      { path: "/applications/:applicationId/properties/:propertyId", element: <PropertyDetailPage /> },
+      { path: "/applications/:applicationId/properties/:propertyId/integration", element: <IntegrationCodePage /> },
       { path: "/integrations", element: <IntegrationsPage /> },
       { path: "/settings", element: <TenantSettingsPage /> },
       { path: "*", element: <NotFound /> },

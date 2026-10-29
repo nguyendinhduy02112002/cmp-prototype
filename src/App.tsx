@@ -5,7 +5,7 @@ import { TooltipProvider } from "@/components/ui/tooltip"
 import { routes } from "@/config/routes"
 
 // Router trong bộ nhớ: không đọc, ghi thanh địa chỉ – chạy được trong khung xem artifact, tệp mở trực tiếp và mọi máy chủ tĩnh
-const router = createMemoryRouter(routes, { initialEntries: ["/dashboard"] })
+const router = createMemoryRouter(routes, { initialEntries: ["/login"] })
 // Hook cho kiểm thử tự động (Playwright) điều hướng thẳng tới một màn
 ;(window as unknown as { __nav?: (to: string) => void }).__nav = (to) => { void router.navigate(to) }
 

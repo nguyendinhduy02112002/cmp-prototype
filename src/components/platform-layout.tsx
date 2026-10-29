@@ -11,7 +11,7 @@ import { msg } from "@/components/cmp/approval"
 
 const ITEMS = [
   { to: "/platform", label: "Tổng quan nền tảng", icon: LayoutDashboard, action: "dashboard.view" as const },
-  { to: "/platform/tenants", label: "Danh mục tenant", icon: Building2, action: "tenants.view" as const },
+  { to: "/platform/tenants", label: "Danh mục tổ chức", icon: Building2, action: "tenants.view" as const },
   { to: "/platform/audit", label: "Nhật ký nền tảng", icon: ScrollText, action: "audit.view" as const },
 ]
 

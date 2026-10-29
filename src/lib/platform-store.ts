@@ -13,7 +13,7 @@ const PLATFORM_PERMISSIONS: Record<PlatformRole, PlatformAction[]> = {
 export const canPlatform = (actor: PlatformActor | undefined, action: PlatformAction) => !!actor?.role && PLATFORM_PERMISSIONS[actor.role].includes(action)
 export const TENANT_CODE_RE = /^[A-Z][A-Z0-9]*(?:-[A-Z0-9]+)*$/
 
-interface TenantInput { name: string; code: string; description?: string; contactEmail?: string }
+interface TenantInput { name: string; code: string; description?: string; contactEmail?: string; initialAdminName: string; initialAdminEmail: string; initialAdminPassword: string }
 interface PlatformState extends PlatformSnapshot {
   setActor: (actorId: string) => boolean
   getActor: () => PlatformActor | undefined
@@ -48,20 +48,27 @@ export const usePlatformStore = create<PlatformState>((set, get) => {
     createTenant: (input) => {
       if (!canPlatform(actor(), "tenants.create")) return { ok: false, msg: "Bạn không có quyền tạo tenant." }
       const name = input.name.trim(); const code = input.code.trim().toUpperCase(); const email = input.contactEmail?.trim() || ""
+      const initialAdminName = input.initialAdminName.trim(); const initialAdminEmail = input.initialAdminEmail.trim().toLowerCase()
       const errors: Partial<Record<keyof TenantInput, string>> = {}
       if (!name) errors.name = "Tên tổ chức là bắt buộc."
       if (!code) errors.code = "Mã tenant là bắt buộc."
       else if (!TENANT_CODE_RE.test(code)) errors.code = "Dùng chữ in hoa, số và dấu gạch ngang; bắt đầu bằng chữ."
       else if (get().tenants.some((t) => t.code.toUpperCase() === code)) errors.code = "Mã tenant đã tồn tại."
       if (email && !/^\S+@\S+\.\S+$/.test(email)) errors.contactEmail = "Email không hợp lệ."
+      if (!initialAdminName) errors.initialAdminName = "Họ tên quản trị viên ban đầu là bắt buộc."
+      if (!/^\S+@\S+\.\S+$/.test(initialAdminEmail)) errors.initialAdminEmail = "Email đăng nhập không hợp lệ."
+      else if (useStore.getState().accounts.some((a) => a.email.toLowerCase() === initialAdminEmail)) errors.initialAdminEmail = "Email đã thuộc về một tài khoản tenant khác."
+      if (input.initialAdminPassword.length < 8) errors.initialAdminPassword = "Mật khẩu cần ít nhất 8 ký tự."
       if (Object.keys(errors).length) return { ok: false, msg: "Vui lòng kiểm tra dữ liệu nhập.", errors }
       const now = new Date().toISOString()
       const tenant: Tenant = { id: `tenant-${code.toLowerCase()}-${Date.now().toString(36)}`, code, name, status: "ACTIVE", description: input.description?.trim(), contactEmail: email || undefined, createdAt: now, updatedAt: now }
       const tenants = [...get().tenants, tenant]
       commit({ tenants })
       useStore.setState((s) => ({ tenants, workspaces: { ...s.workspaces, [tenant.id]: createEmptyTenantWorkspace() } }))
+      const provisioned = useStore.getState().provisionTenantAdmin(tenant.id, { name: initialAdminName, email: initialAdminEmail, password: input.initialAdminPassword })
+      if (!provisioned.ok) return { ok: false, msg: provisioned.msg }
       initializeTenantSettings(tenant.id)
-      audit("TENANT_CREATED", tenant, { code: tenant.code, organizationName: tenant.name, status: tenant.status })
+      audit("TENANT_CREATED", tenant, { code: tenant.code, organizationName: tenant.name, status: tenant.status, initialAdminCreated: "true" })
       return { ok: true, msg: `Đã tạo tenant ${tenant.name}.`, tenantId: tenant.id }
     },
     updateTenant: (tenantId, input) => {

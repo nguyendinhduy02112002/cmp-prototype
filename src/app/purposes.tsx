@@ -147,7 +147,7 @@ function PurposeSheet({ code, onClose, onEdit }: { code: string; onClose: () => 
           </div>
           <Card className="py-4"><CardContent>
             <KV rows={[
-              ["Mô tả cho chủ thể", view.desc || "—"],
+              ["Mô tả", view.desc || "—"],
               ["Loại dữ liệu", <div className="flex flex-wrap gap-1">{view.items.map((i) => <Pill key={i} tone={itemByCode(i)?.group === "Nhạy cảm" ? "err" : "mute"}>{itemByCode(i)?.name || i}</Pill>)}</div>],
               ["Nhóm (tự xác định)", groupOf(view.items)],
               ["Phạm vi xử lý", view.scope || "—"],
@@ -215,7 +215,7 @@ function PurposeForm({ init, isNew, onClose }: { init: Purpose; isNew: boolean; 
   }
   const checkFull = () => {
     const e = checkBasic()
-    if (!p.desc.trim()) e.desc = "Vui lòng nhập Mô tả cho chủ thể. (MSG-C-01)"
+    if (!p.desc.trim()) e.desc = "Vui lòng nhập Mô tả. (MSG-C-01)"
     if (!p.items.length) e.items = "Vui lòng chọn ít nhất một loại dữ liệu (BR-UC01-02)."
     if (!p.scope.trim()) e.scope = "Vui lòng nhập Phạm vi xử lý. (MSG-C-01)"
     if (!p.retention.trim()) e.retention = "Vui lòng nhập Thời hạn xử lý. (MSG-C-01)"
@@ -246,7 +246,7 @@ function PurposeForm({ init, isNew, onClose }: { init: Purpose; isNew: boolean; 
               <Input id="code" value={p.code} disabled={codeLocked} onChange={(e) => set("code", e.target.value.toUpperCase())} className="font-mono" aria-invalid={!!err.code} />
             </FormField>
             <FormField id="name" error={err.name} label="Tên mục đích" req><Input id="name" value={p.name} onChange={(e) => set("name", e.target.value)} aria-invalid={!!err.name} /></FormField>
-            <FormField id="desc" error={err.desc} label="Mô tả cho chủ thể dữ liệu" req><Textarea id="desc" rows={3} value={p.desc} onChange={(e) => set("desc", e.target.value)} aria-invalid={!!err.desc} /></FormField>
+            <FormField id="desc" error={err.desc} label="Mô tả" req><Textarea id="desc" rows={3} value={p.desc} onChange={(e) => set("desc", e.target.value)} aria-invalid={!!err.desc} /></FormField>
             <FormField id="scope" error={err.scope} label="Phạm vi xử lý" req><Input id="scope" value={p.scope} onChange={(e) => set("scope", e.target.value)} aria-invalid={!!err.scope} /></FormField>
             <FormField id="legal" error={err.legal} label="Cơ sở pháp lý" req hint="Theo Điều 19 Luật 91/2025/QH15 [KC]. Cơ sở khác 'Đồng ý' chỉ thông báo, không xin đồng ý (BR-UC01-11).">
               <NativeSelect id="legal" label="Cơ sở pháp lý" value={p.legalBasis} onChange={(v) => set("legalBasis", v as LegalBasis)} options={[...LEGAL_BASES]} className="w-full" />

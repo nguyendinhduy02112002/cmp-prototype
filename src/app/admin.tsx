@@ -16,6 +16,7 @@ import type { AuditEntry, ImportBatch, Role, User } from "@/lib/types"
 import { fmtDT, fmtN } from "@/lib/fmt"
 import { msg, useUi } from "@/components/cmp/approval"
 import { cn } from "@/lib/utils"
+import { useNavigate } from "react-router-dom"
 
 /* ------------------------------ Import kế thừa ------------------------------ */
 export function ImportPage() {
@@ -81,6 +82,7 @@ function ImportDetail({ b }: { b: ImportBatch }) {
 
 /* ------------------------------ Người dùng & phân quyền ------------------------------ */
 export function UsersPage() {
+  const navigate = useNavigate()
   const memberships = useStore((s) => s.memberships)
   const tenantId = useStore((s) => s.currentTenantId)
   const tenant = useStore((s) => s.tenants.find((t) => t.id === s.currentTenantId))
@@ -103,7 +105,7 @@ export function UsersPage() {
   return (
     <>
       <PageHeader title="Người dùng & phân quyền" crumbs={[["Hệ thống"]]} desc="Ba vai trò nội bộ, đăng nhập qua SSO có MFA. Một người có thể giữ nhiều vai trò nhưng không bao giờ được phê duyệt đề nghị do chính mình gửi (BR-AP-01)."
-        actions={ed && tab === "users" ? <Button onClick={() => setInv(true)}><UserPlus /> Mời người dùng</Button> : undefined} />
+        actions={ed && tab === "users" ? <Button onClick={() => navigate("/users/create")}><UserPlus /> Tạo người dùng</Button> : undefined} />
       <Section>
         <Tabs value={tab} onValueChange={(v) => setTab(String(v))}>
           <TabsList><TabsTrigger value="users">Người dùng ({users.length})</TabsTrigger><TabsTrigger value="perm">Ma trận phân quyền</TabsTrigger></TabsList>

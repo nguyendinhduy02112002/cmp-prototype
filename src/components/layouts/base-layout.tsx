@@ -1,5 +1,5 @@
 import * as React from "react"
-import { Outlet, useLocation } from "react-router-dom"
+import { Navigate, Outlet, useLocation } from "react-router-dom"
 import { AppSidebar } from "@/components/app-sidebar"
 import { SiteHeader } from "@/components/site-header"
 import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar"
@@ -14,11 +14,13 @@ export function AppLayout() {
   const { pathname } = useLocation()
   const can = useCan()
   const role = useStore((s) => s.role)
+  const authenticated = useStore((s) => s.authenticated)
   const tenantId = useStore((s) => s.currentTenantId)
   const tenantActive = useStore((s) => s.tenants.some((t) => t.id === s.currentTenantId && t.status === "ACTIVE"))
   const mod = ROUTE_MOD.find(([re]) => re.test(pathname))?.[1]
   const allowed = tenantActive && (!mod || can(mod))
   React.useEffect(() => { window.scrollTo(0, 0) }, [pathname])
+  if (!authenticated) return <Navigate to="/login" replace state={{ from: pathname }} />
   return (
     <SidebarProvider style={{ "--sidebar-width": "16rem", "--sidebar-width-icon": "3rem", "--header-height": "calc(var(--spacing) * 14)" } as React.CSSProperties}>
       <AppSidebar variant="sidebar" collapsible="icon" />

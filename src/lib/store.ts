@@ -13,6 +13,9 @@ import type {
 import { canWithEffectiveRole, PERM_DEFAULT, resolveEffectiveRole, type Act, type Mod, type PermMatrix } from "./perm"
 import { fakeHash, nowISO, uid } from "./fmt"
 import { readPlatformTenants } from "./platform-data"
+import { persistTenantApplications, readApplicationSnapshot, validateApplicationInput, type ApplicationErrors, type ApplicationInput } from "./application-data"
+import { persistTenantProperties, readPropertySnapshot, validatePropertyInput, type PropertyErrors, type PropertyInput } from "./property-data"
+import { demoPasswordDigest, readAuthSnapshot, writeAuthSnapshot, type TenantAccount } from "./auth-data"
 
 const clone = <T,>(x: T): T => JSON.parse(JSON.stringify(x))
 
@@ -58,6 +61,8 @@ export interface ApprovalItem {
 export interface State {
   tenants: Tenant[]
   memberships: TenantMembership[]
+  accounts: TenantAccount[]
+  authenticated: boolean
   currentTenantId: string | null
   currentUserId: string | null
   workspaces: Record<string, TenantWorkspace>
@@ -80,12 +85,23 @@ export interface State {
   users: User[]
   outbox: OutboxEvent[]
   switchTenant: (tenantId: string) => { ok: boolean; msg: string }
-  setPersona: (userId: string) => { ok: boolean; msg: string }
+  login: (tenantCode: string, email: string, password: string) => { ok: boolean; msg: string }
+  logout: () => void
+  createTenantUser: (input: { name: string; email: string; password: string; roles: Role[] }) => { ok: boolean; msg: string; errors?: Record<string, string> }
+  provisionTenantAdmin: (tenantId: string, input: { name: string; email: string; password: string }) => { ok: boolean; msg: string; userId?: string }
   getCurrentTenant: () => Tenant | undefined
   getCurrentMembership: () => TenantMembership | undefined
   getWorkspace: (tenantId: string) => TenantWorkspace | undefined
   setRole: (r: Role) => { ok: boolean; msg: string }
   setPerm: (r: Role, m: Mod, a: Act, v: boolean) => void
+  createApplication: (input: ApplicationInput, expectedTenantId: string) => { ok: boolean; msg: string; applicationId?: string; errors?: ApplicationErrors }
+  updateApplication: (applicationId: string, input: ApplicationInput, expectedTenantId: string) => { ok: boolean; msg: string; errors?: ApplicationErrors }
+  setApplicationStatus: (applicationId: string, status: TenantApplication["status"], expectedTenantId: string) => { ok: boolean; msg: string }
+  createProperty: (applicationId: string, input: PropertyInput, expectedTenantId: string, expectedApplicationId: string) => { ok: boolean; msg: string; propertyId?: string; errors?: PropertyErrors }
+  updateProperty: (applicationId: string, propertyId: string, input: PropertyInput, expectedTenantId: string, expectedApplicationId: string) => { ok: boolean; msg: string; errors?: PropertyErrors }
+  setPropertyStatus: (applicationId: string, propertyId: string, status: TenantProperty["status"], expectedTenantId: string, expectedApplicationId: string) => { ok: boolean; msg: string }
+  assignPropertyIntegration: (applicationId: string, propertyId: string, consentCode: string, bannerCode: string, expectedTenantId: string) => { ok: boolean; msg: string }
+  publishPropertyIntegration: (applicationId: string, propertyId: string, expectedTenantId: string) => { ok: boolean; msg: string }
   log: (act: string, obj: string, res?: "ok" | "err", det?: string, before?: string, after?: string) => void
   notify: (to: string, text: string, link?: string, tone?: Notice2User["tone"]) => void
   markRead: (id: string) => void
@@ -116,7 +132,7 @@ export interface State {
   reject: (id: string, note: string) => { ok: boolean; msg: string }
   withdraw: (id: string) => void
   // thu thập consent
-  recordDecision: (o: { subject: string; consent: string; decision: Decision; channel: string; app: string; source?: Source; sensitive?: boolean; explicitConfirm?: boolean; linkedFrom?: string }) => ConsentEvent
+  recordDecision: (o: { subject: string; consent: string; decision: Decision; channel: string; app: string; propertyId?: string; source?: Source; sensitive?: boolean; explicitConfirm?: boolean; linkedFrom?: string }) => ConsentEvent
   addOffline: (e: ConsentEvent) => void
   correctEvent: (id: string, reason: string, consent: string, decision: Decision) => void
   exportPackage: (p: Omit<EvidencePackage, "id" | "at" | "by" | "pdfHash" | "jsonHash">) => EvidencePackage
@@ -130,13 +146,8 @@ export interface State {
 
 export const persona = (r: Role) => M.PERSONA[r]
 
-export const DEMO_USERS: Record<string, { name: string; email: string }> = {
-  "user-staff": { name: M.PERSONA["Nhân viên"], email: "staff@demo.cmp" },
-  "user-dpo": { name: M.PERSONA.DPO, email: "dpo@demo.cmp" },
-  "user-admin": { name: M.PERSONA.Admin, email: "admin@demo.cmp" },
-  "user-health-admin": { name: "Đặng Hải An", email: "admin.health@demo.cmp" },
-  "user-health-dpo": { name: "Vũ Minh Anh", email: "dpo.health@demo.cmp" },
-}
+const authSeed = readAuthSnapshot()
+export const DEMO_USERS: Record<string, { name: string; email: string }> = Object.fromEntries(authSeed.accounts.map((u) => [u.id, { name: u.name, email: u.email }]))
 
 export const DEMO_TENANTS: Tenant[] = [
   { id: "tenant-retail", code: "ABC-RETAIL", name: "ABC Retail", status: "ACTIVE" },
@@ -145,14 +156,7 @@ export const DEMO_TENANTS: Tenant[] = [
 ]
 
 export const DEMO_MEMBERSHIPS: TenantMembership[] = [
-  { userId: "user-staff", tenantId: "tenant-retail", roles: ["Nhân viên"], status: "ACTIVE" },
-  { userId: "user-dpo", tenantId: "tenant-retail", roles: ["DPO"], status: "ACTIVE" },
-  { userId: "user-admin", tenantId: "tenant-retail", roles: ["Admin"], status: "ACTIVE" },
-  { userId: "user-staff", tenantId: "tenant-finance", roles: ["Admin"], status: "ACTIVE" },
-  { userId: "user-dpo", tenantId: "tenant-finance", roles: ["DPO"], status: "ACTIVE" },
-  { userId: "user-admin", tenantId: "tenant-health", roles: ["Nhân viên"], status: "ACTIVE" },
-  { userId: "user-health-admin", tenantId: "tenant-health", roles: ["Admin", "DPO"], status: "ACTIVE" },
-  { userId: "user-health-dpo", tenantId: "tenant-health", roles: ["DPO"], status: "ACTIVE" },
+  ...authSeed.memberships,
 ]
 
 const seedOutbox = (): OutboxEvent[] => [
@@ -163,14 +167,21 @@ const seedOutbox = (): OutboxEvent[] => [
 ]
 
 function seedWorkspace(kind: "retail" | "finance" | "health"): TenantWorkspace {
-  const applications = clone(M.APPS) as TenantApplication[]
+  const tenantId = `tenant-${kind}`
+  const applications = clone(M.APPS) as Pick<TenantApplication, "id" | "name" | "property">[]
   const names = kind === "retail"
     ? ["Website abcmart.vn", "Cổng thành viên member.abcmart.vn", "Ứng dụng ABC Mart (iOS/Android)"]
     : kind === "finance"
       ? ["ABC Finance Website", "Cổng khách hàng ABC Finance", "ABC Finance Mobile"]
       : ["ABC Health Website", "Cổng bệnh nhân ABC Health", "ABC Health Mobile"]
   const sites = kind === "retail" ? ["abcmart.vn", "member.abcmart.vn", "Ứng dụng ABC Mart"] : kind === "finance" ? ["abcfinance.vn", "portal.abcfinance.vn", "ABC Finance Mobile"] : ["abchealth.vn", "patient.abchealth.vn", "ABC Health Mobile"]
-  applications.forEach((a, i) => { a.name = names[i]; a.property = sites[i] })
+  const seededAt = "2026-03-15T03:00:00Z"
+  const normalizedApplications: TenantApplication[] = applications.map((a, i) => ({
+    ...a, tenantId, name: names[i], property: sites[i], propertyId: `property-${i + 1}`,
+    code: kind === "retail" ? ["ABC-WEB", "ABC-MEMBER", "ABC-MOBILE"][i] : `${kind.toUpperCase()}-${["WEB", "PORTAL", "MOBILE"][i]}`,
+    type: i === 2 ? "MOBILE" : "WEB", status: "ACTIVE", createdAt: seededAt, updatedAt: seededAt,
+    createdBy: "seed", activatedAt: seededAt,
+  }))
   const propertyMap = new Map(M.PROPERTIES.map((p, i) => [p, sites[i]]))
   const events = clone(M.EVENTS).slice(0, kind === "retail" ? undefined : 36).map((e: ConsentEvent) => ({ ...e, property: propertyMap.get(e.property) || sites[0] }))
   const purposes = clone(M.PURPOSES)
@@ -178,8 +189,15 @@ function seedWorkspace(kind: "retail" | "finance" | "health"): TenantWorkspace {
   if (kind === "health") purposes[0] = { ...purposes[0], name: "Quản lý hồ sơ chăm sóc sức khỏe" }
   const banners = clone(M.BANNERS).map((b: Banner) => ({ ...b, site: propertyMap.get(b.site) || sites[0] }))
   return {
-    perm: clone(PERM_DEFAULT), applications,
-    properties: applications.map((a, i) => ({ id: `property-${i + 1}`, name: a.property, applicationId: a.id })),
+    perm: clone(PERM_DEFAULT), applications: normalizedApplications,
+    properties: normalizedApplications.map((a, i): TenantProperty => ({
+      id: `property-${i + 1}`, tenantId, name: a.property,
+      code: `${kind.toUpperCase()}-${["WEB", "PORTAL", "MOBILE"][i]}`,
+      type: i === 2 ? "ANDROID" : "WEB", applicationId: a.id,
+      origin: i < 2 ? `https://${sites[i]}` : undefined,
+      packageName: i === 2 ? `vn.abc.${kind}` : undefined,
+      status: "ACTIVE", createdAt: seededAt, updatedAt: seededAt, createdBy: "seed", activatedAt: seededAt,
+    })),
     purposes, consents: clone(M.CONSENTS), notices: clone(M.NOTICES), banners, events,
     audit: clone(M.AUDIT), nlog: clone(M.NLOG), alerts: clone(M.ALERTS), imports: clone(M.IMPORTS), packages: [],
     ruleSets: clone(M.RECONSENT_RULES), matrix: clone(M.MATRIX), users: clone(M.USERS), outbox: seedOutbox(),
@@ -190,6 +208,17 @@ const INITIAL_WORKSPACES: Record<string, TenantWorkspace> = {
   "tenant-retail": seedWorkspace("retail"),
   "tenant-finance": seedWorkspace("finance"),
   "tenant-health": seedWorkspace("health"),
+}
+
+const persistedApplications = readApplicationSnapshot()
+for (const [tenantId, applications] of Object.entries(persistedApplications)) {
+  const workspace = INITIAL_WORKSPACES[tenantId]
+  if (workspace) workspace.applications = applications
+}
+const persistedProperties = readPropertySnapshot()
+for (const [tenantId, properties] of Object.entries(persistedProperties)) {
+  const workspace = INITIAL_WORKSPACES[tenantId]
+  if (workspace) workspace.properties = properties.filter((p) => workspace.applications.some((a) => a.id === p.applicationId))
 }
 
 export const createEmptyTenantWorkspace = (): TenantWorkspace => ({
@@ -203,6 +232,7 @@ for (const tenant of initialTenantRegistry) {
 }
 
 const DEMO_CONTEXT_KEY = "cmp-demo-context-v1"
+const AUTH_SESSION_KEY = "cmp-auth-session-v1"
 interface DemoContext { tenantId: string; userId: string; role: Role }
 
 export function resolveDemoContext(value: unknown): DemoContext {
@@ -211,7 +241,7 @@ export function resolveDemoContext(value: unknown): DemoContext {
   const raw = value as Partial<DemoContext>
   const tenant = readPlatformTenants().find((t) => t.id === raw.tenantId && t.status === "ACTIVE")
   if (!tenant || typeof raw.userId !== "string") return fallback
-  const membership = DEMO_MEMBERSHIPS.find((m) => m.tenantId === tenant.id && m.userId === raw.userId && m.status === "ACTIVE")
+  const membership = authSeed.memberships.find((m) => m.tenantId === tenant.id && m.userId === raw.userId && m.status === "ACTIVE")
   if (!membership) return fallback
   const role = resolveEffectiveRole(membership, raw.role as Role)
   return role ? { tenantId: tenant.id, userId: membership.userId, role } : fallback
@@ -219,8 +249,29 @@ export function resolveDemoContext(value: unknown): DemoContext {
 
 const loadDemoContext = (): DemoContext => {
   if (typeof window === "undefined") return resolveDemoContext(undefined)
-  try { return resolveDemoContext(JSON.parse(window.localStorage.getItem(DEMO_CONTEXT_KEY) || "null")) }
+  try {
+    const session = JSON.parse(window.localStorage.getItem(AUTH_SESSION_KEY) || "null") as { tenantId?: string; userId?: string } | null
+    if (session?.tenantId && session.userId) {
+      const tenant = readPlatformTenants().find((t) => t.id === session.tenantId && t.status === "ACTIVE")
+      const membership = authSeed.memberships.find((m) => m.tenantId === session.tenantId && m.userId === session.userId && m.status === "ACTIVE")
+      const account = authSeed.accounts.find((a) => a.tenantId === session.tenantId && a.id === session.userId && a.status === "ACTIVE")
+      if (tenant && account && membership) {
+        const requested = JSON.parse(window.localStorage.getItem(DEMO_CONTEXT_KEY) || "null") as Partial<DemoContext> | null
+        const role = requested?.tenantId === tenant.id && requested.userId === account.id ? resolveEffectiveRole(membership, requested.role as Role) : membership.roles[0]
+        if (role) return { tenantId: tenant.id, userId: account.id, role }
+      }
+    }
+    return resolveDemoContext(JSON.parse(window.localStorage.getItem(DEMO_CONTEXT_KEY) || "null"))
+  }
   catch { return resolveDemoContext(undefined) }
+}
+
+const loadAuthenticated = () => {
+  if (typeof window === "undefined") return false
+  try {
+    const raw = JSON.parse(window.localStorage.getItem(AUTH_SESSION_KEY) || "null") as { tenantId?: string; userId?: string } | null
+    return !!raw && !!authSeed.accounts.find((a) => a.id === raw.userId && a.tenantId === raw.tenantId && a.status === "ACTIVE") && !!authSeed.memberships.find((m) => m.userId === raw.userId && m.tenantId === raw.tenantId && m.status === "ACTIVE") && !!readPlatformTenants().find((t) => t.id === raw.tenantId && t.status === "ACTIVE")
+  } catch { return false }
 }
 
 const persistDemoContext = (context: DemoContext) => {
@@ -232,7 +283,7 @@ const workspaceFields = (s: State): TenantWorkspace => ({
   perm: clone(s.perm), applications: clone(s.applications), properties: clone(s.properties), purposes: clone(s.purposes), consents: clone(s.consents), notices: clone(s.notices), banners: clone(s.banners), events: clone(s.events), audit: clone(s.audit), nlog: clone(s.nlog), alerts: clone(s.alerts), imports: clone(s.imports), packages: clone(s.packages), ruleSets: clone(s.ruleSets), matrix: clone(s.matrix), users: clone(s.users), outbox: clone(s.outbox),
 })
 
-export const currentMembership = (s: State) => s.memberships.find((m) => m.tenantId === s.currentTenantId && m.userId === s.currentUserId && m.status === "ACTIVE")
+export const currentMembership = (s: State) => s.authenticated ? s.memberships.find((m) => m.tenantId === s.currentTenantId && m.userId === s.currentUserId && m.status === "ACTIVE") : undefined
 export const currentActor = (s: State) => s.currentUserId ? DEMO_USERS[s.currentUserId]?.name || s.currentUserId : "Chưa chọn người dùng"
 export const hasPermission = (s: State, mod: Mod, act: Act = "view") => {
   return canWithEffectiveRole(currentMembership(s), s.role, s.perm, mod, act)
@@ -240,7 +291,7 @@ export const hasPermission = (s: State, mod: Mod, act: Act = "view") => {
 
 const cfgArr = (s: State, kind: "purpose" | "consent") => (kind === "purpose" ? s.purposes : s.consents) as (Purpose | Consent)[]
 const label = { purpose: "Mục đích", consent: "Consent" }
-const snap = (kind: "purpose" | "consent", o: Purpose | Consent, applications: TenantApplication[] = M.APPS) => {
+const snap = (kind: "purpose" | "consent", o: Purpose | Consent, applications: TenantApplication[] = []) => {
   if (kind === "purpose") return M.snapPurpose(o as Purpose)
   const c = o as Consent
   return { ...M.snapConsent(c), "Ứng dụng": c.apps.map((id) => applications.find((a) => a.id === id)?.name || id) }
@@ -270,6 +321,8 @@ export const useStore = create<State>((set, get) => {
   return {
     tenants: clone(initialTenantRegistry),
     memberships: clone(DEMO_MEMBERSHIPS),
+    accounts: clone(authSeed.accounts),
+    authenticated: loadAuthenticated(),
     currentTenantId: initialContext.tenantId,
     currentUserId: initialContext.userId,
     workspaces: clone(INITIAL_WORKSPACES),
@@ -279,10 +332,13 @@ export const useStore = create<State>((set, get) => {
     switchTenant: (tenantId) => {
       const s = get()
       if (tenantId === s.currentTenantId) return { ok: true, msg: "Tenant đã được chọn." }
+      const account = s.accounts.find((a) => a.id === s.currentUserId)
+      if (account && account.tenantId !== tenantId) return { ok: false, msg: "Tài khoản chỉ thuộc một tenant; hãy đăng xuất và đăng nhập bằng tài khoản của tenant đích." }
       const tenant = s.tenants.find((t) => t.id === tenantId)
       if (!tenant || tenant.status !== "ACTIVE") return { ok: false, msg: "Tenant không khả dụng hoặc đã bị tạm ngừng." }
       const membership = s.memberships.find((m) => m.tenantId === tenantId && m.userId === s.currentUserId && m.status === "ACTIVE")
       if (!membership) return { ok: false, msg: "Người dùng hiện tại không có membership hoạt động trong tenant này." }
+      if (s.accounts.some((a) => a.id === s.currentUserId && a.tenantId !== tenantId)) return { ok: false, msg: "Tài khoản chỉ thuộc một tenant; hãy đăng xuất và đăng nhập bằng tài khoản của tenant đích." }
       const target = s.workspaces[tenantId]
       if (!target) return { ok: false, msg: "Không tìm thấy workspace của tenant." }
       const nextWorkspaces = { ...s.workspaces }
@@ -293,15 +349,59 @@ export const useStore = create<State>((set, get) => {
       persistDemoContext({ tenantId, userId: membership.userId, role: nextRole })
       return { ok: true, msg: `Đã chuyển sang ${tenant.name}.` }
     },
-    setPersona: (userId) => {
+    login: (tenantCode, email, password) => {
+      const s = get(); const tenant = s.tenants.find((t) => t.code.toLowerCase() === tenantCode.trim().toLowerCase() && t.status === "ACTIVE")
+      if (!tenant) return { ok: false, msg: "Không tìm thấy tenant đang hoạt động với mã này." }
+      const account = s.accounts.find((a) => a.tenantId === tenant.id && a.email.toLowerCase() === email.trim().toLowerCase() && a.status === "ACTIVE" && a.passwordDigest === demoPasswordDigest(password))
+      const membership = account && s.memberships.find((m) => m.userId === account.id && m.tenantId === tenant.id && m.status === "ACTIVE")
+      if (!account || !membership || !membership.roles.length) return { ok: false, msg: "Email hoặc mật khẩu không đúng, hoặc tài khoản không còn quyền truy cập." }
+      const workspace = s.workspaces[tenant.id]
+      if (!workspace) return { ok: false, msg: "Workspace tenant không khả dụng." }
+      const nextWorkspaces = { ...s.workspaces }
+      if (s.currentTenantId) nextWorkspaces[s.currentTenantId] = workspaceFields(s)
+      const role = membership.roles[0]
+      set({ ...clone(workspace), workspaces: nextWorkspaces, currentTenantId: tenant.id, currentUserId: account.id, role, authenticated: true })
+      persistDemoContext({ tenantId: tenant.id, userId: account.id, role })
+      if (typeof window !== "undefined") window.localStorage.setItem(AUTH_SESSION_KEY, JSON.stringify({ tenantId: tenant.id, userId: account.id }))
+      return { ok: true, msg: `Xin chào ${account.name}.` }
+    },
+    logout: () => {
+      if (typeof window !== "undefined") window.localStorage.removeItem(AUTH_SESSION_KEY)
+      set({ authenticated: false })
+    },
+    createTenantUser: (input) => {
       const s = get()
-      const membership = s.memberships.find((m) => m.tenantId === s.currentTenantId && m.userId === userId && m.status === "ACTIVE")
-      if (!membership) return { ok: false, msg: "Persona không có membership hoạt động trong tenant hiện tại." }
-      const nextRole = resolveEffectiveRole(membership, s.role)
-      if (!nextRole) return { ok: false, msg: "Persona không có vai trò hợp lệ trong tenant hiện tại." }
-      set({ currentUserId: userId, role: nextRole })
-      if (s.currentTenantId) persistDemoContext({ tenantId: s.currentTenantId, userId, role: nextRole })
-      return { ok: true, msg: `Đang mô phỏng ${DEMO_USERS[userId]?.name || userId}.` }
+      if (!s.currentTenantId || !s.tenants.some((t) => t.id === s.currentTenantId && t.status === "ACTIVE")) return { ok: false, msg: "Tenant hiện tại không hoạt động." }
+      if (!allowed("users", "edit", "Tạo người dùng tenant", input.email)) return { ok: false, msg: "Bạn không có quyền tạo người dùng trong tenant này." }
+      const name = input.name.trim(), email = input.email.trim().toLowerCase()
+      const errors: Record<string, string> = {}
+      if (!name) errors.name = "Họ tên là bắt buộc."
+      if (!/^\S+@\S+\.\S+$/.test(email)) errors.email = "Email không hợp lệ."
+      if (s.accounts.some((a) => a.email.toLowerCase() === email)) errors.email = "Email này đã được gắn với một tài khoản tenant."
+      if (input.password.length < 8) errors.password = "Mật khẩu demo cần ít nhất 8 ký tự."
+      if (!input.roles.length || input.roles.some((r) => !["Admin", "DPO", "Nhân viên"].includes(r))) errors.roles = "Chọn ít nhất một vai trò hợp lệ."
+      if (Object.keys(errors).length) return { ok: false, msg: "Vui lòng kiểm tra thông tin người dùng.", errors }
+      const now = nowISO(), id = `user_${fakeHash(`${s.currentTenantId}|${email}|${now}`).slice(0, 12)}`
+      const account: TenantAccount = { id, tenantId: s.currentTenantId, name, email, passwordDigest: demoPasswordDigest(input.password), roles: [...new Set(input.roles)], status: "ACTIVE", createdAt: now }
+      const accounts = [...s.accounts, account], memberships = [...s.memberships, { userId: id, tenantId: s.currentTenantId, roles: account.roles, status: "ACTIVE" as const }]
+      set({ accounts, memberships })
+      DEMO_USERS[id] = { name, email }
+      writeAuthSnapshot({ accounts, memberships })
+      get().log("Tạo người dùng tenant", id, "ok", `roles=${account.roles.join(",")}`)
+      return { ok: true, msg: "Đã tạo tài khoản người dùng trong tenant hiện tại." }
+    },
+    provisionTenantAdmin: (tenantId, input) => {
+      const s = get(), name = input.name.trim(), email = input.email.trim().toLowerCase()
+      if (!s.tenants.some((t) => t.id === tenantId && t.status === "ACTIVE")) return { ok: false, msg: "Tenant mới chưa sẵn sàng." }
+      if (!name || !/^\S+@\S+\.\S+$/.test(email) || input.password.length < 8) return { ok: false, msg: "Thông tin tài khoản quản trị ban đầu không hợp lệ." }
+      if (s.accounts.some((a) => a.email.toLowerCase() === email)) return { ok: false, msg: "Email đã được sử dụng trong một tenant khác." }
+      const now = nowISO(), id = `user_${fakeHash(`${tenantId}|${email}|${now}`).slice(0, 12)}`
+      const account: TenantAccount = { id, tenantId, name, email, passwordDigest: demoPasswordDigest(input.password), roles: ["Admin"], status: "ACTIVE", createdAt: now }
+      const accounts = [...s.accounts, account], memberships = [...s.memberships, { userId: id, tenantId, roles: ["Admin"] as Role[], status: "ACTIVE" as const }]
+      set({ accounts, memberships })
+      DEMO_USERS[id] = { name, email }
+      writeAuthSnapshot({ accounts, memberships })
+      return { ok: true, msg: "Đã tạo tài khoản quản trị ban đầu.", userId: id }
     },
     getCurrentTenant: () => get().tenants.find((t) => t.id === get().currentTenantId),
     getCurrentMembership: () => currentMembership(get()),
@@ -323,6 +423,172 @@ export const useStore = create<State>((set, get) => {
       const before = String(get().perm[r][m][a])
       upd((s) => { const p = clone(s.perm); p[r][m][a] = v; return { perm: p } })
       get().log("Sửa ma trận phân quyền", `Vai trò ${r} · ${m} · ${a}`, "ok", undefined, before, String(v))
+    },
+    createApplication: (input, expectedTenantId) => {
+      const s = get()
+      if (!s.currentTenantId || s.currentTenantId !== expectedTenantId) return { ok: false, msg: "Ngữ cảnh tenant đã thay đổi. Vui lòng mở lại biểu mẫu." }
+      const tenant = s.tenants.find((t) => t.id === s.currentTenantId)
+      if (!tenant || tenant.status !== "ACTIVE") return { ok: false, msg: "Tenant không khả dụng hoặc đã bị tạm ngừng." }
+      if (!allowed("integ", "edit", "Đăng ký ứng dụng", input.code || input.name)) return { ok: false, msg: "Bạn không có quyền đăng ký ứng dụng trong tenant này." }
+      const checked = validateApplicationInput(input, s.applications)
+      if (Object.keys(checked.errors).length) return { ok: false, msg: "Vui lòng kiểm tra dữ liệu nhập.", errors: checked.errors }
+      const now = nowISO(); const actorId = s.currentUserId || "unknown"
+      const application: TenantApplication = {
+        id: `app_${fakeHash(`${s.currentTenantId}|${checked.value.code}|${now}`).slice(0, 12)}`,
+        tenantId: s.currentTenantId, ...checked.value, propertyId: undefined, description: checked.value.description || undefined,
+        property: "Chưa có Property", status: "INACTIVE", createdAt: now, updatedAt: now, createdBy: actorId,
+      }
+      const applications = [application, ...s.applications]
+      set({ applications }); persistTenantApplications(s.currentTenantId, applications)
+      get().log("Đăng ký ứng dụng", application.id, "ok", `code=${application.code}; status=INACTIVE`)
+      return { ok: true, msg: `Đã đăng ký ứng dụng ${application.name}.`, applicationId: application.id }
+    },
+    updateApplication: (applicationId, input, expectedTenantId) => {
+      const s = get()
+      if (!s.currentTenantId || s.currentTenantId !== expectedTenantId) return { ok: false, msg: "Ngữ cảnh tenant đã thay đổi. Thay đổi chưa được lưu." }
+      const tenant = s.tenants.find((t) => t.id === s.currentTenantId)
+      if (!tenant || tenant.status !== "ACTIVE") return { ok: false, msg: "Tenant không khả dụng hoặc đã bị tạm ngừng." }
+      if (!allowed("integ", "edit", "Cập nhật ứng dụng", applicationId)) return { ok: false, msg: "Bạn không có quyền sửa ứng dụng trong tenant này." }
+      const current = s.applications.find((a) => a.id === applicationId && a.tenantId === s.currentTenantId)
+      if (!current) { get().log("Cập nhật ứng dụng", applicationId, "err", "Application không thuộc tenant hiện tại"); return { ok: false, msg: "Không tìm thấy ứng dụng trong tenant hiện tại." } }
+      const checked = validateApplicationInput(input, s.applications, applicationId)
+      if (current.activatedAt && checked.value.type !== current.type) checked.errors.type = "Không thể đổi loại sau khi ứng dụng đã từng Active."
+      if (Object.keys(checked.errors).length) return { ok: false, msg: "Vui lòng kiểm tra dữ liệu nhập.", errors: checked.errors }
+      const changedFields = (["name", "code", "type", "description"] as const).filter((k) => (current[k] || "") !== (checked.value[k] || ""))
+      if (!changedFields.length) return { ok: false, msg: "Không có thay đổi để lưu." }
+      const updated: TenantApplication = { ...current, ...checked.value, propertyId: current.propertyId, description: checked.value.description || undefined, property: current.property, updatedAt: nowISO(), updatedBy: s.currentUserId || "unknown" }
+      const applications = s.applications.map((a) => a.id === applicationId ? updated : a)
+      set({ applications }); persistTenantApplications(s.currentTenantId, applications)
+      get().log("Cập nhật ứng dụng", applicationId, "ok", `fields=${changedFields.join(",")}`)
+      return { ok: true, msg: "Đã cập nhật ứng dụng." }
+    },
+    setApplicationStatus: (applicationId, status, expectedTenantId) => {
+      const s = get()
+      if (!s.currentTenantId || s.currentTenantId !== expectedTenantId) return { ok: false, msg: "Ngữ cảnh tenant đã thay đổi. Thao tác bị hủy." }
+      const tenant = s.tenants.find((t) => t.id === s.currentTenantId)
+      if (!tenant || tenant.status !== "ACTIVE") return { ok: false, msg: "Tenant không khả dụng hoặc đã bị tạm ngừng." }
+      if (!allowed("integ", "edit", status === "ACTIVE" ? "Kích hoạt ứng dụng" : "Ngừng ứng dụng", applicationId)) return { ok: false, msg: "Bạn không có quyền đổi trạng thái ứng dụng." }
+      const current = s.applications.find((a) => a.id === applicationId && a.tenantId === s.currentTenantId)
+      if (!current) { get().log("Đổi trạng thái ứng dụng", applicationId, "err", "Application không thuộc tenant hiện tại"); return { ok: false, msg: "Không tìm thấy ứng dụng trong tenant hiện tại." } }
+      if (current.status === status) return { ok: true, msg: "Ứng dụng đã ở trạng thái này." }
+      const now = nowISO(); const updated = { ...current, status, updatedAt: now, updatedBy: s.currentUserId || "unknown", activatedAt: status === "ACTIVE" ? current.activatedAt || now : current.activatedAt }
+      const applications = s.applications.map((a) => a.id === applicationId ? updated : a)
+      set({ applications }); persistTenantApplications(s.currentTenantId, applications)
+      get().log(status === "ACTIVE" ? "Kích hoạt ứng dụng" : "Ngừng ứng dụng", applicationId, "ok", `status=${status}`)
+      return { ok: true, msg: status === "ACTIVE" ? "Đã kích hoạt ứng dụng." : "Đã chuyển ứng dụng sang Inactive; dữ liệu và quan hệ được giữ nguyên." }
+    },
+    createProperty: (applicationId, input, expectedTenantId, expectedApplicationId) => {
+      const s = get()
+      if (!s.currentTenantId || s.currentTenantId !== expectedTenantId || applicationId !== expectedApplicationId) return { ok: false, msg: "Ngữ cảnh tenant hoặc Application đã thay đổi. Vui lòng mở lại biểu mẫu." }
+      const tenant = s.tenants.find((t) => t.id === s.currentTenantId)
+      if (!tenant || tenant.status !== "ACTIVE") return { ok: false, msg: "Tenant không khả dụng hoặc đã bị tạm ngừng." }
+      if (!allowed("integ", "edit", "Tạo Property", applicationId)) return { ok: false, msg: "Bạn không có quyền quản lý Property." }
+      const application = s.applications.find((a) => a.id === applicationId && a.tenantId === s.currentTenantId)
+      if (!application) return { ok: false, msg: "Application không thuộc tenant hiện tại." }
+      if (application.status !== "ACTIVE") return { ok: false, msg: "Chỉ có thể tạo Property dưới Application đang Active." }
+      const checked = validatePropertyInput(input, s.properties, applicationId)
+      if (Object.keys(checked.errors).length) return { ok: false, msg: "Vui lòng kiểm tra dữ liệu Property.", errors: checked.errors }
+      const now = nowISO(); const actorId = s.currentUserId || "unknown"
+      const property: TenantProperty = {
+        id: `property_${fakeHash(`${s.currentTenantId}|${applicationId}|${checked.value.code}|${now}`).slice(0, 12)}`,
+        tenantId: s.currentTenantId, applicationId, name: checked.value.name, code: checked.value.code,
+        type: checked.value.type, origin: checked.value.type === "WEB" ? checked.value.origin : undefined,
+        packageName: checked.value.type === "ANDROID" ? checked.value.packageName : undefined,
+        bundleId: checked.value.type === "IOS" ? checked.value.bundleId : undefined,
+        description: checked.value.description || undefined, status: "ACTIVE", createdAt: now, updatedAt: now,
+        createdBy: actorId, activatedAt: now,
+      }
+      const properties = [property, ...s.properties]
+      set({ properties }); persistTenantProperties(s.currentTenantId, properties)
+      get().log("Tạo Property", property.id, "ok", `applicationId=${applicationId}; propertyId=${property.id}; code=${property.code}`)
+      return { ok: true, msg: `Đã tạo Property ${property.name}.`, propertyId: property.id }
+    },
+    updateProperty: (applicationId, propertyId, input, expectedTenantId, expectedApplicationId) => {
+      const s = get()
+      if (!s.currentTenantId || s.currentTenantId !== expectedTenantId || applicationId !== expectedApplicationId) return { ok: false, msg: "Ngữ cảnh tenant hoặc Application đã thay đổi. Thay đổi chưa được lưu." }
+      const tenant = s.tenants.find((t) => t.id === s.currentTenantId)
+      if (!tenant || tenant.status !== "ACTIVE") return { ok: false, msg: "Tenant không khả dụng hoặc đã bị tạm ngừng." }
+      if (!allowed("integ", "edit", "Cập nhật Property", propertyId)) return { ok: false, msg: "Bạn không có quyền quản lý Property." }
+      const application = s.applications.find((a) => a.id === applicationId && a.tenantId === s.currentTenantId)
+      const current = s.properties.find((p) => p.id === propertyId && p.tenantId === s.currentTenantId && p.applicationId === applicationId)
+      if (!application || !current) return { ok: false, msg: "Property không thuộc Application và tenant hiện tại." }
+      const checked = validatePropertyInput(input, s.properties, applicationId, propertyId)
+      if (Object.keys(checked.errors).length) return { ok: false, msg: "Vui lòng kiểm tra dữ liệu Property.", errors: checked.errors }
+      const fields = (["name", "code", "type", "origin", "packageName", "bundleId", "description"] as const).filter((k) => (current[k] || "") !== (checked.value[k] || ""))
+      if (!fields.length) return { ok: false, msg: "Không có thay đổi để lưu." }
+      const updated: TenantProperty = { ...current, name: checked.value.name, code: checked.value.code, type: checked.value.type,
+        origin: checked.value.type === "WEB" ? checked.value.origin : undefined, packageName: checked.value.type === "ANDROID" ? checked.value.packageName : undefined,
+        bundleId: checked.value.type === "IOS" ? checked.value.bundleId : undefined, description: checked.value.description || undefined,
+        updatedAt: nowISO(), updatedBy: s.currentUserId || "unknown" }
+      const properties = s.properties.map((p) => p.id === propertyId ? updated : p)
+      set({ properties }); persistTenantProperties(s.currentTenantId, properties)
+      get().log("Cập nhật Property", propertyId, "ok", `applicationId=${applicationId}; propertyId=${propertyId}; fields=${fields.join(",")}`)
+      return { ok: true, msg: "Đã cập nhật Property." }
+    },
+    setPropertyStatus: (applicationId, propertyId, status, expectedTenantId, expectedApplicationId) => {
+      const s = get()
+      if (!s.currentTenantId || s.currentTenantId !== expectedTenantId || applicationId !== expectedApplicationId) return { ok: false, msg: "Ngữ cảnh tenant hoặc Application đã thay đổi. Thao tác bị hủy." }
+      const tenant = s.tenants.find((t) => t.id === s.currentTenantId)
+      if (!tenant || tenant.status !== "ACTIVE") return { ok: false, msg: "Tenant không khả dụng hoặc đã bị tạm ngừng." }
+      if (!allowed("integ", "edit", "Đổi trạng thái Property", propertyId)) return { ok: false, msg: "Bạn không có quyền quản lý Property." }
+      const application = s.applications.find((a) => a.id === applicationId && a.tenantId === s.currentTenantId)
+      const current = s.properties.find((p) => p.id === propertyId && p.tenantId === s.currentTenantId && p.applicationId === applicationId)
+      if (!application || !current) return { ok: false, msg: "Property không thuộc Application và tenant hiện tại." }
+      if (current.status === status) return { ok: true, msg: "Property đã ở trạng thái này." }
+      const now = nowISO(); const updated = { ...current, status, updatedAt: now, updatedBy: s.currentUserId || "unknown", activatedAt: status === "ACTIVE" ? current.activatedAt || now : current.activatedAt }
+      const properties = s.properties.map((p) => p.id === propertyId ? updated : p)
+      set({ properties }); persistTenantProperties(s.currentTenantId, properties)
+      get().log(status === "ACTIVE" ? "Kích hoạt Property" : "Ngừng Property", propertyId, "ok", `applicationId=${applicationId}; propertyId=${propertyId}; status=${status}`)
+      return { ok: true, msg: status === "ACTIVE" ? "Đã kích hoạt Property." : "Đã chuyển Property sang Inactive; dữ liệu và quan hệ được giữ nguyên." }
+    },
+    assignPropertyIntegration: (applicationId, propertyId, consentCode, bannerCode, expectedTenantId) => {
+      const s = get()
+      if (!s.currentTenantId || s.currentTenantId !== expectedTenantId) return { ok: false, msg: "Ngữ cảnh tenant đã thay đổi. Vui lòng thao tác lại." }
+      const tenant = s.tenants.find((t) => t.id === s.currentTenantId)
+      if (!tenant || tenant.status !== "ACTIVE") return { ok: false, msg: "Tenant không khả dụng hoặc đã bị tạm ngừng." }
+      const canAssign =
+        hasPermission(s, "integ", "edit") ||
+        (
+          s.role === "Nhân viên" &&
+          hasPermission(s, "banner", "edit")
+        )
+      if (!canAssign) {
+        return {
+          ok: false,
+          msg: "Bạn không có quyền gán cấu hình cho Property."
+        }
+      }
+      const application = s.applications.find((a) => a.id === applicationId && a.tenantId === s.currentTenantId)
+      const property = s.properties.find((p) => p.id === propertyId && p.applicationId === applicationId && p.tenantId === s.currentTenantId)
+      const consent = s.consents.find((c) => c.code === consentCode && c.status === "Hoạt động")
+      const banner = s.banners.find((b) => b.code === bannerCode && b.versions.some((v) => v.status === "Hoạt động"))
+      if (!application || !property) return { ok: false, msg: "Property không thuộc Application và tenant hiện tại." }
+      if (!consent) return { ok: false, msg: "Consent Configuration chưa được DPO phê duyệt hoặc không thuộc tenant." }
+      if (!banner) return { ok: false, msg: "Banner chưa được DPO phê duyệt hoặc không thuộc tenant." }
+      const integration = { consentCode, bannerCode, status: "DRAFT" as const, version: property.integration?.version || 0, deploymentId: property.integration?.deploymentId }
+      const properties = s.properties.map((p) => p.id === propertyId ? { ...p, integration, updatedAt: nowISO(), updatedBy: s.currentUserId || "unknown" } : p)
+      set({ properties }); persistTenantProperties(s.currentTenantId, properties)
+      get().log("Gán cấu hình consent", propertyId, "ok", `applicationId=${applicationId}; propertyId=${propertyId}; consentCode=${consentCode}; bannerCode=${bannerCode}`)
+      return { ok: true, msg: "Đã gán Consent Configuration và Banner. Cần Publish để dùng trong Simulator." }
+    },
+    publishPropertyIntegration: (applicationId, propertyId, expectedTenantId) => {
+      const s = get()
+      if (!s.currentTenantId || s.currentTenantId !== expectedTenantId) return { ok: false, msg: "Ngữ cảnh tenant đã thay đổi. Vui lòng thao tác lại." }
+      const tenant = s.tenants.find((t) => t.id === s.currentTenantId)
+      const application = s.applications.find((a) => a.id === applicationId && a.tenantId === s.currentTenantId)
+      const property = s.properties.find((p) => p.id === propertyId && p.applicationId === applicationId && p.tenantId === s.currentTenantId)
+      if (!tenant || tenant.status !== "ACTIVE" || !application || application.status !== "ACTIVE" || !property || property.status !== "ACTIVE") return { ok: false, msg: "Tenant, Application và Property phải ở trạng thái Active." }
+      if (!allowed("integ", "edit", "Publish cấu hình Property", propertyId)) return { ok: false, msg: "Bạn không có quyền Publish cấu hình." }
+      if (!property.integration) return { ok: false, msg: "Hãy gán Consent Configuration và Banner trước khi Publish." }
+      const consent = s.consents.find((c) => c.code === property.integration?.consentCode && c.status === "Hoạt động")
+      const banner = s.banners.find((b) => b.code === property.integration?.bannerCode && b.versions.some((v) => v.status === "Hoạt động"))
+      if (!consent || !banner) return { ok: false, msg: "Consent hoặc Banner không còn ở trạng thái được phê duyệt." }
+      const at = nowISO(); const deploymentId = property.integration.deploymentId || `dep_${fakeHash(`${s.currentTenantId}|${propertyId}`).slice(0, 16)}`
+      const integration = { ...property.integration, status: "PUBLISHED" as const, version: property.integration.version + 1, deploymentId, publishedAt: at, publishedBy: s.currentUserId || "unknown" }
+      const properties = s.properties.map((p) => p.id === propertyId ? { ...p, integration, updatedAt: at, updatedBy: s.currentUserId || "unknown" } : p)
+      set({ properties }); persistTenantProperties(s.currentTenantId, properties)
+      get().log("Publish cấu hình Property", propertyId, "ok", `applicationId=${applicationId}; propertyId=${propertyId}; deploymentId=${deploymentId}; version=${integration.version}`)
+      return { ok: true, msg: `Đã Publish cấu hình v${integration.version}.` }
     },
     log: (act, obj, res = "ok", det, before, after) => upd((s) => ({ audit: [{ tenantId: s.currentTenantId || undefined, userId: s.currentUserId || undefined, at: nowISO(), who: me(), role: s.role, act, obj, res, det, before, after }, ...s.audit] })),
     notify: (to, text, link, tone = "info") => upd((s) => ({ nlog: [{ id: uid("N"), to, at: nowISO(), text, link, read: false, tone }, ...s.nlog] })),
@@ -562,9 +828,11 @@ export const useStore = create<State>((set, get) => {
       }
       const pub = s.notices.find((n) => n.consent === o.consent && n.status === "Published")
       const app = s.applications.find((a) => a.id === o.app)
+      const property = o.propertyId ? s.properties.find((p) => p.id === o.propertyId && p.applicationId === o.app && p.tenantId === s.currentTenantId) : undefined
+      if (o.propertyId && !property) throw new Error("Property không thuộc Application và tenant hiện tại.")
       const id = uid("EV")
       const e: ConsentEvent = {
-        id, subject: o.subject, consent: o.consent, version: pub?.v || "—", decision: o.decision, ts: nowISO(), channel: o.channel, app: o.app, property: app?.property || "abcmart.vn",
+        id, subject: o.subject, consent: o.consent, version: pub?.v || "—", decision: o.decision, ts: nowISO(), channel: o.channel, app: o.app, property: property?.name || app?.property || "abcmart.vn",
         source: o.source || "Trực tuyến", hash: pub?.hash || fakeHash(o.consent), tx: "tx_" + fakeHash(id).slice(0, 12), ip: "113.161.24.87", ua: "Chrome 130 · Windows 11 (mô phỏng)",
         sensitive: o.sensitive, explicitConfirm: o.explicitConfirm, linkedFrom: o.linkedFrom,
         receipt: (o.decision === "ACCEPTED" || o.decision === "REJECTED") && !o.subject.startsWith("ck_") ? { jti: "rcp_" + fakeHash(id).slice(0, 16), kid: "cmp-2026-07", alg: "ES256", enc: "RSA-OAEP-256 / A256GCM", aud: o.app, exp: "[N] giây (OI-04)", decision: o.decision } : undefined,
@@ -572,6 +840,7 @@ export const useStore = create<State>((set, get) => {
       const evType = { ACCEPTED: "CONSENT_ACCEPTED", REJECTED: "CONSENT_REJECTED", WITHDRAWN: "CONSENT_WITHDRAWN", EXPIRED: "CONSENT_EXPIRED", RE_CONSENT: "VERSION_CHANGED", NOT_CONSENTED: "—" }[o.decision]
       const out: OutboxEvent[] = ["CRM chăm sóc khách hàng", "Nền tảng dữ liệu khách hàng (CDP)"].map((dest, i) => ({ id: "evt_" + fakeHash(id + i).slice(0, 6), type: evType, consent: o.consent, subject: o.subject, dest, status: "DELIVERED", at: e.ts, tries: 1 }))
       upd((st) => ({ events: [e, ...st.events], outbox: [...out, ...st.outbox] }))
+      get().log(o.decision === "WITHDRAWN" ? "Rút lại consent trong Simulator" : "Ghi quyết định Simulator", e.id, "ok", `applicationId=${o.app}; propertyId=${property?.id || "legacy"}; consentCode=${o.consent}; decision=${o.decision}`)
       return e
     },
     addOffline: (e) => {
@@ -781,7 +1050,9 @@ export function useCan() {
   const role = useStore((s) => s.role)
   const perm = useStore((s) => s.perm)
   const memberships = useStore((s) => s.memberships)
+  const authenticated = useStore((s) => s.authenticated)
   return (m: Mod, a: Act = "view") => {
+    if (!authenticated) return false
     const membership = memberships.find((x) => x.tenantId === tenantId && x.userId === userId && x.status === "ACTIVE")
     return canWithEffectiveRole(membership, role, perm, m, a)
   }
